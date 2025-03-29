@@ -78,6 +78,8 @@ struct Runtime {
     start: (usize, usize),
     location: (usize, usize),
     end: Option<(usize, usize)>,
+    top_left_point: (usize, usize),
+    bottom_right_point: (usize, usize),
 }
 
 impl Runtime {
@@ -102,19 +104,18 @@ impl Runtime {
         self.start = (MAP_SIZE / 2, MAP_SIZE / 2);
         self.location = self.start;
 
-        loop {
-            if DEBUG {
-                self.print_map();
-            }
+        self.top_left_point = (MAP_SIZE, MAP_SIZE);
 
+        // let mut next_location_potentials = Vec::new();
+        'outer: loop {
             let mut moved = true;
             while moved {
                 moved = false;
                 for direction in [
                     DroidDirection::Up,
+                    DroidDirection::Left,
                     DroidDirection::Down,
                     DroidDirection::Right,
-                    DroidDirection::Left,
                 ] {
                     loop {
                         let new_location = direction.move_location(self.location);
@@ -129,13 +130,47 @@ impl Runtime {
                 }
             }
 
-            if let Some(path) = self.empty_location_to_explore() {
-                for direction in &path {
-                    self.walk(direction);
+            for y in self.top_left_point.1 - 1..=self.bottom_right_point.1 + 1 {
+                for x in self.top_left_point.0 - 1..=self.bottom_right_point.0 {
+                    let a = (x, y);
+                    let b = (x + 1, y);
+
+                    let to_discover = match (self.map[a.1][a.0], self.map[b.1][b.0]) {
+                        (Location::Undiscovered, Location::Empty) => a,
+                        (Location::Empty, Location::Undiscovered) => b,
+                        _ => continue,
+                    };
+
+                    if let Some(path) = self.path_to_location(self.location, to_discover) {
+                        for direction in &path {
+                            self.walk(direction);
+                        }
+                        continue 'outer;
+                    }
                 }
-            } else {
-                break;
             }
+
+            for x in self.top_left_point.0 - 1..=self.bottom_right_point.0 + 1 {
+                for y in self.top_left_point.1 - 1..=self.bottom_right_point.1 {
+                    let a = (x, y);
+                    let b = (x, y + 1);
+
+                    let to_discover = match (self.map[a.1][a.0], self.map[b.1][b.0]) {
+                        (Location::Undiscovered, Location::Empty) => a,
+                        (Location::Empty, Location::Undiscovered) => b,
+                        _ => continue,
+                    };
+
+                    if let Some(path) = self.path_to_location(self.location, to_discover) {
+                        for direction in &path {
+                            self.walk(direction);
+                        }
+                        continue 'outer;
+                    }
+                }
+            }
+
+            break;
         }
 
         if DEBUG {
@@ -177,6 +212,21 @@ impl Runtime {
             Interupt::Input => panic!("Expected output, got input"),
             Interupt::Output(v) => {
                 let new_location = direction.move_location(self.location);
+                let x = new_location.0;
+                let y = new_location.1;
+
+                if x < self.top_left_point.0 {
+                    self.top_left_point.0 = x;
+                } else if x > self.bottom_right_point.0 {
+                    self.bottom_right_point.0 = x;
+                }
+
+                if y < self.top_left_point.1 {
+                    self.top_left_point.1 = y;
+                } else if y > self.bottom_right_point.1 {
+                    self.bottom_right_point.1 = y;
+                }
+
                 match v {
                     0 => {
                         // Droid hit a wall, change direction
@@ -194,6 +244,10 @@ impl Runtime {
                     }
                     v => panic!("Unknown output: {}", v),
                 };
+
+                if DEBUG {
+                    self.print_map();
+                }
             }
         }
     }
@@ -204,83 +258,9 @@ impl Runtime {
     ) -> Option<Vec<DroidDirection>> {
         PathFinder::find(&self.map, from, to)
     }
-    fn empty_location_to_explore(&mut self) -> Option<Vec<DroidDirection>> {
-        let mut offset = 0;
-        let mut to_check = Vec::new();
-        let base_location = (self.location.0 as isize, self.location.1 as isize);
-        loop {
-            to_check.clear();
-
-            offset += 1;
-            let side_len = offset * 2 + 1;
-
-            // Left side
-            let x = base_location.0 - offset;
-            let y = base_location.1 - offset;
-            for i in 0..side_len {
-                if let Some(v) = valid_cord(x, y + i) {
-                    to_check.push(v);
-                }
-            }
-
-            // Top side
-            let x = base_location.0 + offset;
-            let y = base_location.1 - offset;
-            for i in 0..side_len {
-                if let Some(v) = valid_cord(x - i, y) {
-                    to_check.push(v);
-                }
-            }
-
-            // Right side
-            let x = base_location.0 + offset;
-            let y = base_location.1 + offset;
-            for i in 0..side_len {
-                if let Some(v) = valid_cord(x, y - i) {
-                    to_check.push(v);
-                }
-            }
-
-            // Bottom side
-            let x = base_location.0 - offset;
-            let y = base_location.1 + offset;
-            for i in 0..side_len {
-                if let Some(v) = valid_cord(x + i, y) {
-                    to_check.push(v);
-                }
-            }
-
-            if to_check.is_empty() {
-                return None;
-            }
-
-            let mut seen_empty_tiles = false;
-            let mut has_tiles = false;
-            for location in &to_check {
-                if let Location::Undiscovered = self.map[location.1][location.0] {
-                    seen_empty_tiles = true;
-                    if let Some(path) = self.path_to_location(self.location, *location) {
-                        return Some(path);
-                    }
-                } else {
-                    has_tiles = true;
-                }
-            }
-            if !has_tiles && seen_empty_tiles {
-                return None;
-            }
-        }
-    }
     fn reset(&mut self) {
         self.program.reset(self.source_memory.clone());
     }
-}
-
-fn valid_cord(x: isize, y: isize) -> Option<(usize, usize)> {
-    if x < 0 || y < 0 || x >= MAP_SIZE as isize || y >= MAP_SIZE as isize {
-        return None;
-    }
-    Some((x as usize, y as usize))
 }
 
 struct PathFinder<'a> {
