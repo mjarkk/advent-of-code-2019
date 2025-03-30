@@ -25,7 +25,9 @@ fn main() {
     }
     println!("read puzzle duration: {:.2?}", t.elapsed());
 
+    let part_start = Instant::now();
     let end = runtime.discover_map();
+    println!("discover map duration: {:.2?}", part_start.elapsed());
 
     let p1 = ShortestPathFinder::find(&runtime.map, runtime.start, end).unwrap();
     println!("p1: {}", p1);
@@ -68,6 +70,24 @@ impl DroidDirection {
             DroidDirection::Left => (location.0 - 1, location.1),
         }
     }
+    fn perpendicular_sides(&self) -> [DroidDirection; 2] {
+        match self {
+            DroidDirection::Up | DroidDirection::Down => {
+                [DroidDirection::Left, DroidDirection::Right]
+            }
+            DroidDirection::Left | DroidDirection::Right => {
+                [DroidDirection::Up, DroidDirection::Down]
+            }
+        }
+    }
+    fn reverse(&self) -> DroidDirection {
+        match self {
+            DroidDirection::Up => DroidDirection::Down,
+            DroidDirection::Down => DroidDirection::Up,
+            DroidDirection::Left => DroidDirection::Right,
+            DroidDirection::Right => DroidDirection::Left,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -80,6 +100,7 @@ struct Runtime {
     end: Option<(usize, usize)>,
     top_left_point: (usize, usize),
     bottom_right_point: (usize, usize),
+    no_path: usize,
 }
 
 impl Runtime {
@@ -105,16 +126,16 @@ impl Runtime {
         self.location = self.start;
 
         self.top_left_point = (MAP_SIZE, MAP_SIZE);
+        let mut options = Vec::new();
 
-        // let mut next_location_potentials = Vec::new();
         'outer: loop {
-            let mut moved = true;
-            while moved {
-                moved = false;
+            let mut has_explored = true;
+            while has_explored {
+                has_explored = false;
                 for direction in [
                     DroidDirection::Up,
-                    DroidDirection::Left,
                     DroidDirection::Down,
+                    DroidDirection::Left,
                     DroidDirection::Right,
                 ] {
                     loop {
@@ -122,14 +143,18 @@ impl Runtime {
                         match self.map[new_location.1][new_location.0] {
                             Location::Wall | Location::Empty => break,
                             Location::Undiscovered => {
-                                self.walk(&direction);
-                                moved = true;
+                                has_explored = true;
+
+                                if self.walk(&direction) {
+                                    self.explore_perpendicular_sides(&direction);
+                                }
                             }
                         }
                     }
                 }
             }
 
+            options.clear();
             for y in self.top_left_point.1 - 1..=self.bottom_right_point.1 + 1 {
                 for x in self.top_left_point.0 - 1..=self.bottom_right_point.0 {
                     let a = (x, y);
@@ -141,15 +166,30 @@ impl Runtime {
                         _ => continue,
                     };
 
-                    if let Some(path) = self.path_to_location(self.location, to_discover) {
-                        for direction in &path {
-                            self.walk(direction);
-                        }
-                        continue 'outer;
-                    }
+                    options.push((to_discover, distance(self.location, to_discover)));
                 }
             }
 
+            options.sort_by(|a, b| a.1.cmp(&b.1));
+            for option in &options {
+                if let Some(path) = self.path_to_location(self.location, option.0) {
+                    let mut walkable = false;
+                    for (idx, direction) in path.iter().enumerate() {
+                        if idx == path.len() - 1 {
+                            walkable = self.walk(direction);
+                        } else {
+                            assert!(self.walk(direction));
+                        }
+                    }
+                    if walkable {
+                        continue 'outer;
+                    }
+                } else {
+                    self.no_path += 1;
+                }
+            }
+
+            options.clear();
             for x in self.top_left_point.0 - 1..=self.bottom_right_point.0 + 1 {
                 for y in self.top_left_point.1 - 1..=self.bottom_right_point.1 {
                     let a = (x, y);
@@ -161,12 +201,26 @@ impl Runtime {
                         _ => continue,
                     };
 
-                    if let Some(path) = self.path_to_location(self.location, to_discover) {
-                        for direction in &path {
-                            self.walk(direction);
+                    options.push((to_discover, distance(self.location, to_discover)));
+                }
+            }
+
+            options.sort_by(|a, b| a.1.cmp(&b.1));
+            for option in &options {
+                if let Some(path) = self.path_to_location(self.location, option.0) {
+                    let mut walkable = false;
+                    for (idx, direction) in path.iter().enumerate() {
+                        if idx == path.len() - 1 {
+                            walkable = self.walk(direction);
+                        } else {
+                            assert!(self.walk(direction));
                         }
+                    }
+                    if walkable {
                         continue 'outer;
                     }
+                } else {
+                    self.no_path += 1;
                 }
             }
 
@@ -187,7 +241,19 @@ impl Runtime {
 
         self.end.expect("End location must be found")
     }
-    fn print_map(&mut self) {
+    fn explore_perpendicular_sides(&mut self, direction: &DroidDirection) {
+        for perpendicular_direction in direction.perpendicular_sides() {
+            let new_location = perpendicular_direction.move_location(self.location);
+            if let Location::Undiscovered = self.map[new_location.1][new_location.0] {
+                // Attempt to explore this location
+                if self.walk(&perpendicular_direction) {
+                    // If we walked to this location go back to the previous location
+                    self.walk(&perpendicular_direction.reverse());
+                }
+            }
+        }
+    }
+    fn print_map(&self) {
         for (y, row) in self.map.iter().enumerate() {
             for (x, data) in row.iter().enumerate() {
                 let location = (x, y);
@@ -205,7 +271,7 @@ impl Runtime {
             }
         }
     }
-    fn walk(&mut self, direction: &DroidDirection) {
+    fn walk(&mut self, direction: &DroidDirection) -> bool {
         let mut input = vec![direction.to_num()];
         match self.program.run(&mut input) {
             Interupt::Halt => panic!("Halted"),
@@ -227,20 +293,24 @@ impl Runtime {
                     self.bottom_right_point.1 = y;
                 }
 
-                match v {
+                let resp = match v {
                     0 => {
-                        // Droid hit a wall, change direction
+                        // Droid hit a wall
                         self.map[new_location.1][new_location.0] = Location::Wall;
+                        false
                     }
                     1 => {
-                        // Walked one step
+                        // Droid walked one step
                         self.location = direction.move_location(self.location);
                         self.map[new_location.1][new_location.0] = Location::Empty;
+                        true
                     }
                     2 => {
+                        // Droid walked one step end found destination
                         self.location = direction.move_location(self.location);
                         self.map[new_location.1][new_location.0] = Location::Empty;
                         self.end = Some(self.location);
+                        true
                     }
                     v => panic!("Unknown output: {}", v),
                 };
@@ -248,6 +318,8 @@ impl Runtime {
                 if DEBUG {
                     self.print_map();
                 }
+
+                resp
             }
         }
     }
@@ -261,6 +333,13 @@ impl Runtime {
     fn reset(&mut self) {
         self.program.reset(self.source_memory.clone());
     }
+}
+
+// distance between two points
+fn distance(a: (usize, usize), b: (usize, usize)) -> usize {
+    let x = a.0.max(b.0) - a.0.min(b.0);
+    let y = a.1.max(b.1) - a.1.min(b.1);
+    x + y
 }
 
 struct PathFinder<'a> {
@@ -286,7 +365,6 @@ impl<'a> PathFinder<'a> {
         path.reverse();
         Some(path)
     }
-
     fn resolve(&mut self, location: (usize, usize)) -> Option<Vec<DroidDirection>> {
         if location == self.dest {
             return Some(Vec::new());
